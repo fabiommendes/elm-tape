@@ -6,7 +6,7 @@ module Tape exposing
     , map, map2, map3, mapHead, mapLeft, mapRight, mapSelect, indexedMap, reverse, sort, sortBy, sortWith, intersperse, toList, unzip
     , foldr, foldl, reduce, maximum, minimum, sum, product, all, any
     , filterLeft, filterRight
-    , length, position, member, isEmptyLeft, isEmptyRight, parts, leftList, leftTail, rightList, rightTail, elemIndex
+    , length, position, member, isEmptyLeft, isEmptyRight, parts, leftList, leftTail, rightList, rightTail, elemIndex, leftN
     )
 
 {-| A linear structure with a cursor pointing to some specific element. Tapes cannot be empty.
@@ -48,52 +48,6 @@ module Tape exposing
 
 @docs length, position, member, isEmptyLeft, isEmptyRight, parts, leftList, leftTail, rightList, rightTail, elemIndex
 
-
-## Examples
-
-A partial [Brainfuck](https://en.wikipedia.org/wiki/Brainfuck) interpreter
-
-    process cmd tape =
-        case cmd of
-            '+' ->
-                mapHead (\n -> modBy 256 (n + 1))
-
-            '-' ->
-                mapHead (\n -> modBy 256 (n - 1))
-
-            '>' ->
-                rightWithDefault 0 tape
-
-            '<' ->
-                left tape
-
-            _ ->
-                -- '[' and ']' left as exercise to the reader ;-)
-                tape
-
-A carousel model
-
-    type alias Model =
-        { tape : Tape Item
-          -- Other fields...
-        }
-
-    update msg m =
-        OnMoveRight ->
-            { m | tape = rightCycle m.tape }
-
-        OnMoveLeft ->
-            { m | tape = leftCycle m.tape }
-
-        OnMoveTo n ->
-            { m | tape = rightN (n - position m.tape) m.tape }
-
-        OnUpdateCurrent data ->
-            { m | tape = mapHead (updateWith data) tape }
-
-        _ ->
-            -- Handle other messages ...
-            m
 
 -}
 
