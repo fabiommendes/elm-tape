@@ -17,7 +17,7 @@ suite =
                 fromListOrDefault 0 data
 
             tape2 =
-                right (right tape1)
+                redo (redo tape1)
 
             tape3 =
                 advance tape1
@@ -39,16 +39,16 @@ suite =
         in
         [ describe "Functions that do not change tape length" <|
             [ fuzz tapes "move RR" <|
-                \xs -> equalContent (xs |> right |> right) data
+                \xs -> equalContent (xs |> redo |> redo) data
             , fuzz tapes "move RL" <|
-                \xs -> equalContent (xs |> right |> left) data
+                \xs -> equalContent (xs |> redo |> undo) data
             , fuzz tapes "move LL" <|
-                \xs -> equalContent (xs |> left |> left) data
+                \xs -> equalContent (xs |> undo |> undo) data
             , describe "Tape.read" <|
                 [ test "first" <|
                     \_ -> E.equal (tape1 |> read) 1
                 , test "second" <|
-                    \_ -> E.equal (tape1 |> right |> read) 2
+                    \_ -> E.equal (tape1 |> redo |> read) 2
                 , test "last" <|
                     \_ -> E.equal (tape1 |> advance |> read) 5
                 , test "back" <|

@@ -1,50 +1,73 @@
-# Tape for ELM 
+# Tape for ELM
 
 `elm-tape` implements a tape data structure in ELM. Tapes are linear data structures with a movable cursor.
 
 
+
 ## Examples
 
-A partial [Brainfuck](https://en.wikipedia.org/wiki/Brainfuck) interpreter
+Tapes appear naturally in models that show a collection of objects, but focus into a single at each time, such as a carousel,
 
-    process cmd tape =
-        case cmd of
-            '+' ->
-                mapHead (\n -> modBy 256 (n + 1))
+```elm
+type alias Model =
+    { tape : Tape Item
+      -- other fields...
+    }
 
-            '-' ->
-                mapHead (\n -> modBy 256 (n - 1))
+update msg m =
+    GoNext ->
+        { m | tape = Tape.rightCycle m.tape }
 
-            '>' ->
-                rightWithDefault 0 tape
+    GoPrevious ->
+        { m | tape = Tape.leftCycle m.tape }
 
-            '<' ->
-                left tape
+    GoTo n ->
+        { m | tape = Tape.rightN (n - position m.tape) m.tape }
 
-            _ ->
-                -- '[' and ']' left as exercise to the reader ;-)
-                tape
+    Update data ->
+        { m | tape = Tape.write data tape }
 
-A carousel model
+    -- other messages ...
+```
 
-    type alias Model =
-        { tape : Tape Item
-          -- Other fields...
-        }
+A similar pattern is found when we want to implement Undo/Redo for a model or
+parts of the model
 
-    update msg m =
-        OnMoveRight ->
-            { m | tape = rightCycle m.tape }
+```elm
+type alias Model = Tape State
 
-        OnMoveLeft ->
-            { m | tape = leftCycle m.tape }
+update msg history =
+    case msg of
+        Undo ->
+            history
+                |> Tape.undo
 
-        OnMoveTo n ->
-            { m | tape = rightN (n - position m.tape) m.tape }
+        Redo ->
+            history
+                |> Tape.redo
 
-        OnUpdateCurrent data ->
-            { m | tape = mapHead (updateWith data) tape }
+        Save state ->
+            Tape.pushRight state history
 
-        _ ->
-            -- Handle other messages ...
-            m
+        --- other messages ...
+```
+
+And, of course, it also has som more exotic applications, such as this partial [Brainfuck](https://en.wikipedia.org/wiki/Brainfuck) interpreter ;-)
+
+```elm
+process cmd tape =
+    case cmd of
+        '+' ->
+            Tape.mapHead (\n -> modBy 256 (n + 1))
+
+        '-' ->
+            Tape.mapHead (\n -> modBy 256 (n - 1))
+
+        '>' ->
+            Tape.rightWithDefault 0 tape
+
+        '<' ->
+            Tape.moveLeft tape
+
+        -- '[' and ']' left as an exercise to the reader...
+```

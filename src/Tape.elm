@@ -1,12 +1,15 @@
 module Tape exposing
     ( Tape
-    , create, fromList, fromListOrDefault, fromTails, singleton, repeat, range
-    , read, write, advance, rewind, left, right, tryLeft, tryRight
-    , rightN, leftWhile, rightWhile, leftWithDefault, rightWithDefault, moveLeft, moveRight, leftCycle, rightCycle, leftCycleN, rightCycleN, pushLeft, pushRight
-    , map, map2, map3, mapHead, mapLeft, mapRight, mapSelect, indexedMap, reverse, sort, sortBy, sortWith, intersperse, toList, unzip
+    , create, fromList, fromListOrDefault, fromParts, singleton, repeat, range
+    , read, write, advance, rewind, left, right, undo, redo
+    , How(..), leftWith, rightWith, tryLeft, tryRight, pushLeft, pushRight
+    , map, map2, map3, map4, map5, indexedMap, positionalMap
+    , reverse, sort, sortBy, sortWith, intersperse
+    , Direction(..), select, update, take, filter
+    , unzip, parts
+    , toList, show
     , foldr, foldl, reduce, maximum, minimum, sum, product, all, any
-    , filterLeft, filterRight
-    , length, position, member, isEmptyLeft, isEmptyRight, parts, leftList, leftTail, rightList, rightTail, elemIndex, leftN
+    , length, position, member, isEmptyLeft, isEmptyRight, elemIndex
     )
 
 {-| A linear structure with a cursor pointing to some specific element. Tapes cannot be empty.
@@ -16,22 +19,42 @@ module Tape exposing
 
 ## Create
 
-@docs create, fromList, fromListOrDefault, fromTails, singleton, repeat, range
+@docs create, fromList, fromListOrDefault, fromParts, singleton, repeat, range
 
 
-## Simple tape operators
+## Move operations
 
-@docs read, write, advance, rewind, left, right, tryLeft, tryRight
+@docs read, write, advance, rewind, left, right, undo, redo
 
 
-## Advanced tape operators
+## Advanced move operators
 
-@docs leftN, rightN, leftWhile, rightWhile, leftWithDefault, rightWithDefault, moveLeft, moveRight, leftCycle, rightCycle, leftCycleN, rightCycleN, pushLeft, pushRight
+@docs How, leftWith, rightWith, tryLeft, tryRight, pushLeft, pushRight
+
+
+## Mapping
+
+@docs map, map2, map3, map4, map5, indexedMap, positionalMap
 
 
 ## Transforms
 
-@docs map, map2, map3, mapHead, mapLeft, mapRight, mapSelect, indexedMap, reverse, sort, sortBy, sortWith, intersperse, toList, unzip
+@docs reverse, sort, sortBy, sortWith, intersperse
+
+
+## Sub-tapes
+
+@docs Direction, select, update, take, filter
+
+
+## Deconstruction
+
+@docs unzip, parts
+
+
+## Conversions
+
+@docs toList, show
 
 
 ## Summarizing and folding
@@ -39,26 +62,19 @@ module Tape exposing
 @docs foldr, foldl, reduce, maximum, minimum, sum, product, all, any
 
 
-## Filtering
-
-@docs filterLeft, filterRight
-
-
 ## Properties
 
-@docs length, position, member, isEmptyLeft, isEmptyRight, parts, leftList, leftTail, rightList, rightTail, elemIndex
-
+@docs length, position, member, isEmptyLeft, isEmptyRight, elemIndex
 
 -}
 
 import List.Extra as List
-import Maybe.Extra as Maybe
 
 
 {-| Base iterator type
 -}
 type Tape a
-    = Tape (List a) a (List a)
+    = Tape Int (List a) a (List a)
 
 
 
@@ -72,31 +88,55 @@ type Tape a
 The tape is conceptually equivalent to the list `left ++ [head] ++ right`
 and has a cursor that points to the tape head.
 
+    create [ "a", "b" ] "c" [ "d", "e" ]
+        |> show identity
+        --> "[ a, b, => c, d, e ]"
+
 -}
 create : List a -> a -> List a -> Tape a
 create xs y zs =
-    Tape (List.reverse xs) y zs
+    Tape (List.length xs) (List.reverse xs) y zs
 
 
 {-| Try to create tape from List. Empty lists return Nothing.
+
+    (fromList [ 1, 2, 3 ]
+        |> Maybe.map toList)
+        --> Just [ 1, 2, 3 ]
+
 -}
 fromList : List a -> Maybe (Tape a)
 fromList xs =
     case xs of
         x :: ys ->
-            Just (Tape [] x ys)
+            Just (Tape 0 [] x ys)
 
         _ ->
             Nothing
 
 
+{-| Construct tape from left and right tails.
+
+    fromParts (tail Left tape) (head tape) (tail Right tape) ==> tape
+
+-}
+fromParts : List a -> a -> List a -> Tape a
+fromParts xs y zs =
+    Tape (List.length xs) xs y zs
+
+
 {-| Create a tape from List or a singleton tape with the given default value.
+
+    fromListOrDefault 0 [ 1, 2, 3 ]
+        |> toList
+        --> [ 1, 2, 3 ]
+
 -}
 fromListOrDefault : a -> List a -> Tape a
 fromListOrDefault x xs =
     case xs of
         y :: ys ->
-            Tape [] y ys
+            Tape 0 [] y ys
 
         _ ->
             singleton x
@@ -106,25 +146,44 @@ fromListOrDefault x xs =
 -}
 singleton : a -> Tape a
 singleton a =
-    Tape [] a []
+    Tape 0 [] a []
 
 
-{-| Create a tape with n copies of a value.
+{-| Create a tape with n copies of a value and tries to place m of them
+before the head.
 
-Empty tapes or negative n are ignored.
+`repeat 0` behaves similarly to List.repeat, creating a tape with n elements
+pointing to the first element.
+
+Empty negative n are ignored, returning a tape with a single element.
+
+    repeat 2 5 "a"
+        |> show identity
+        --> "[ a, a, => a, a, a ]"
 
 -}
-repeat : Int -> a -> Tape a
-repeat n x =
-    Tape [] x (List.repeat (n - 1) x)
+repeat : Int -> Int -> a -> Tape a
+repeat m n x =
+    if m >= n then
+        Tape n (List.repeat (n - 1) x) x []
+
+    else
+        Tape m (List.repeat m x) x (List.repeat (n - m - 1) x)
 
 
-{-| Create a tape of numbers, every element increasing by one. You give the lowest and highest number that should be in the tape.
+{-| Create a tape of numbers, every element increasing by one.
+
+The arguments are the lowest and highest numbers that should be on the tape.
+
+    range 0 5
+        |> toList
+        --> [ 0, 1, 2, 3, 4, 5 ]
+
 -}
 range : Int -> Int -> Tape Int
 range a b =
     if b > a then
-        Tape [] a (List.range (a + 1) b)
+        Tape 0 [] a (List.range (a + 1) b)
 
     else
         singleton a
@@ -137,225 +196,376 @@ range a b =
 
 
 {-| Read element on the current position.
+
+    create [1, 2] 3 [4, 5]
+        |> read
+        --> 3
+
 -}
 read : Tape a -> a
-read (Tape _ x _) =
+read (Tape _ _ x _) =
     x
 
 
 {-| Write element to the tape's current position.
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> write "changed"
+        |> show identity
+        --> "[ a, b, => changed, d, e ]"
+
 -}
 write : a -> Tape a -> Tape a
-write y (Tape xs _ zs) =
-    Tape xs y zs
+write y (Tape n xs _ zs) =
+    Tape n xs y zs
 
 
-{-| Write element to the tape's current position and push head to the left.
--}
-pushLeft : a -> Tape a -> Tape a
-pushLeft new (Tape xs y zs) =
-    Tape (y :: xs) new zs
+{-| Push element to the right of the current head and move the cursor to it.
 
+    create ["a", "b"] "c" ["d", "e"]
+        |> pushRight "changed"
+        |> show identity
+        --> "[ a, b, c, => changed, d, e ]"
 
-{-| Write element to the tape's current position and push head to the right.
 -}
 pushRight : a -> Tape a -> Tape a
-pushRight new (Tape xs y zs) =
-    Tape xs new (y :: zs)
+pushRight new (Tape n xs y zs) =
+    Tape (n + 1) (y :: xs) new zs
 
 
-{-| Move head a single position to the left, if possibList.
+{-| Push element to the left of the current head and move the cursor to it.
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> pushLeft "changed"
+        |> show identity
+        --> "[ a, b, => changed, c, d, e ]"
+
 -}
-left : Tape a -> Tape a
-left tape =
-    tryLeft tape |> Maybe.withDefault tape
+pushLeft : a -> Tape a -> Tape a
+pushLeft new (Tape n xs y zs) =
+    Tape n xs new (y :: zs)
 
 
-{-| Move left while predicate holds true.
+{-| An alias to `left 1` that is more idiomatic when using the tape as a history container.
+
+    create ["a", "b", "c"] "d" ["e"]
+        |> undo
+        |> show identity
+            --> "[ a, b, => c, d, e ]"
+
 -}
-leftWhile : (a -> Bool) -> Tape a -> Tape a
-leftWhile pred ((Tape _ y _) as tape) =
-    if pred y then
-        rightWhile pred (left tape)
-
-    else
-        tape
-
-
-{-| Move head a single position to the left, adding default if an empty space is found.
--}
-leftWithDefault : a -> Tape a -> Tape a
-leftWithDefault default ((Tape _ y zs) as tape) =
-    tryLeft tape |> Maybe.withDefaultLazy (\_ -> Tape [] default (y :: zs))
-
-
-{-| Try to move a single position to the left.
--}
-tryLeft : Tape a -> Maybe (Tape a)
-tryLeft (Tape xs y zs) =
+undo : Tape a -> Tape a
+undo ((Tape n xs y zs) as tape) =
     case xs of
         [] ->
-            Nothing
+            tape
 
         w :: ws ->
-            Just (Tape ws w (y :: zs))
+            Tape (n - 1) ws w (y :: zs)
 
 
-{-| Move head a single position to the left, and cycles to the back if head is in the starting position.
+{-| An alias to `right 1` that is more idiomatic when using the tape as a history container.
+
+    create ["a", "b", "c"] "d" ["e"]
+        |> redo
+        |> show identity
+            --> "[ a, b, c, d, => e ]"
+
 -}
-leftCycle : Tape a -> Tape a
-leftCycle tape =
-    tryLeft tape |> Maybe.withDefaultLazy (\_ -> advance tape)
+redo : Tape a -> Tape a
+redo ((Tape n xs y zs) as tape) =
+    case zs of
+        [] ->
+            tape
+
+        w :: ws ->
+            Tape (n + 1) (y :: xs) w ws
 
 
 {-| Move at most n positions to the left.
 
 Negative steps move to the right.
 
+    create ["a", "b", "c"] "d" ["e"]
+        |> left 2
+        |> show identity
+        --> "[ a, => b, c, d, e ]"
+
 -}
-leftN : Int -> Tape a -> Tape a
-leftN n ((Tape xs _ zs) as tape) =
-    if n > 0 then
-        case List.splitAt n xs of
-            ( [], _ ) ->
-                tape
-
-            ( w :: ws, toLeft ) ->
-                Tape toLeft w (List.reverse ws ++ zs)
-
-    else if n < 0 then
-        case List.splitAt -n zs of
-            ( [], _ ) ->
-                tape
-
-            ( w :: ws, toRight ) ->
-                Tape (List.reverse ws ++ xs) w toRight
-
-    else
+left : Int -> Tape a -> Tape a
+left n ((Tape m _ _ _) as tape) =
+    if n == 0 || m == 0 then
         tape
 
-
-{-| Move head n positions to the left, cycling if necessary.
--}
-leftCycleN : Int -> Tape a -> Tape a
-leftCycleN n tape =
-    if n > 0 then
-        callN n leftCycle tape
-
-    else if n < 0 then
-        callN n rightCycle tape
+    else if n > 0 then
+        left (n - 1) (undo tape)
 
     else
-        tape
-
-
-{-| Move head a single position to the right, if possible
--}
-right : Tape a -> Tape a
-right tape =
-    tryRight tape |> Maybe.withDefault tape
-
-
-{-| Move right while predicate holds true.
--}
-rightWhile : (a -> Bool) -> Tape a -> Tape a
-rightWhile pred ((Tape _ y _) as tape) =
-    if pred y then
-        rightWhile pred (right tape)
-
-    else
-        tape
-
-
-{-| Move head a single position to the right, adding default if an empty space is found.
--}
-rightWithDefault : a -> Tape a -> Tape a
-rightWithDefault default ((Tape xs y _) as tape) =
-    tryRight tape |> Maybe.withDefaultLazy (\_ -> Tape (y :: xs) default [])
-
-
-{-| Try to move a single position to the right.
--}
-tryRight : Tape a -> Maybe (Tape a)
-tryRight (Tape xs y zs) =
-    case zs of
-        [] ->
-            Nothing
-
-        w :: ws ->
-            Just (Tape (y :: xs) w ws)
-
-
-{-| Move head a single position to the right, and cycles to the front if head is in the last position.
--}
-rightCycle : Tape a -> Tape a
-rightCycle tape =
-    tryRight tape |> Maybe.withDefaultLazy (\_ -> rewind tape)
+        left (n + 1) (redo tape)
 
 
 {-| Move at most n positions to the right.
 
 Negative values move to the left.
 
+    create ["a", "b", "c"] "d" ["e"]
+        |> right 2
+        |> show identity
+        --> "[ a, b, c, d, => e ]"
+
 -}
-rightN : Int -> Tape a -> Tape a
-rightN n =
-    leftN -n
+right : Int -> Tape a -> Tape a
+right n =
+    left -n
 
 
-{-| Move head n positions to the right, cycling if necessary.
+{-| Declare how to move in the tape.
 -}
-rightCycleN : Int -> Tape a -> Tape a
-rightCycleN n =
-    leftCycleN -n
+type How a
+    = Cycle Int
+    | Default ( a, Int )
+    | Condition (a -> Bool)
+    | Carry Int
+
+
+{-| Move head to the left according to strategy
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> leftWith (Cycle 3)
+        |> show identity
+        --> "[ a, b, c, d, => e ]"
+
+    create ["a", "b"] "c" ["d", "e"]
+         |> leftWith (Default ("?", 4))
+         |> show identity
+         --> "[ => ?, ?, a, b, c, d, e ]"
+
+    create ["a", "b"] "c" ["d", "e"]
+         |> leftWith (Condition ((/=) "b"))
+         |> show identity
+         --> "[ a, => b, c, d, e ]"
+
+    create ["a", "b"] "cc" ["d", "e"]
+        |> leftWith (Carry 2)
+        |> show identity
+        --> "[ => cc, a, b, d, e ]"
+
+-}
+leftWith : How a -> Tape a -> Tape a
+leftWith how tape =
+    case how of
+        Cycle n ->
+            leftCycle n tape
+
+        Default ( a, n ) ->
+            leftDefault a n tape
+
+        Condition pred ->
+            leftWhile pred tape
+
+        Carry n ->
+            leftCarry n tape
+
+
+{-| Move head to the right according to strategy
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> rightWith (Cycle 3)
+        |> show identity
+        --> "[ => a, b, c, d, e ]"
+
+    create ["a", "b"] "c" ["d", "e"]
+            |> rightWith (Default ("?", 4))
+            |> show identity
+            --> "[ a, b, c, d, e, ?, => ? ]"
+
+    create ["a", "b"] "c" ["d", "e"]
+            |> rightWith (Condition ((/=) "b"))
+            |> show identity
+            --> "[ a, b, c, d, => e ]"
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> rightWith (Carry 2)
+        |> show identity
+        --> "[ a, b, d, e, => c ]"
+
+-}
+rightWith : How a -> Tape a -> Tape a
+rightWith how tape =
+    case how of
+        Cycle n ->
+            leftCycle -n tape
+
+        Default ( a, n ) ->
+            leftDefault a -n tape
+
+        Condition pred ->
+            rightWhile pred tape
+
+        Carry n ->
+            leftCarry -n tape
+
+
+leftCycle : Int -> Tape a -> Tape a
+leftCycle n ((Tape m _ _ zs) as tape) =
+    if n == 0 then
+        tape
+
+    else if n > 0 && m > 0 then
+        leftCycle (n - 1) (undo tape)
+
+    else if n > 0 && m <= 0 then
+        leftCycle (n - 1) (advance tape)
+
+    else if zs == [] then
+        leftCycle (n + 1) (rewind tape)
+
+    else
+        leftCycle (n + 1) (redo tape)
+
+
+leftWhile : (a -> Bool) -> Tape a -> Tape a
+leftWhile pred ((Tape m _ y _) as tape) =
+    if m > 0 && pred y then
+        leftWhile pred (undo tape)
+
+    else
+        tape
+
+
+rightWhile : (a -> Bool) -> Tape a -> Tape a
+rightWhile pred ((Tape _ _ y zs) as tape) =
+    if not (List.isEmpty zs) && pred y then
+        rightWhile pred (redo tape)
+
+    else
+        tape
+
+
+leftDefault : a -> Int -> Tape a -> Tape a
+leftDefault default n ((Tape m xs y zs) as tape) =
+    if n == 0 then
+        tape
+
+    else if n > 0 then
+        case xs of
+            [] ->
+                leftDefault default (n - 1) (Tape 0 xs default (y :: zs))
+
+            w :: ws ->
+                leftDefault default (n - 1) (Tape (m - 1) ws w (y :: zs))
+
+    else
+        case zs of
+            [] ->
+                leftDefault default (n + 1) (Tape (m + 1) (y :: xs) default zs)
+
+            w :: ws ->
+                leftDefault default (n + 1) (Tape (m + 1) (y :: xs) w ws)
+
+
+leftCarry : Int -> Tape a -> Tape a
+leftCarry n ((Tape m xs y zs) as tape) =
+    if n == 0 then
+        tape
+
+    else if n > 0 then
+        case xs of
+            [] ->
+                tape
+
+            w :: ws ->
+                leftCarry (n - 1) (Tape (m - 1) ws y (w :: zs))
+
+    else
+        case zs of
+            [] ->
+                tape
+
+            w :: ws ->
+                leftCarry (n + 1) (Tape (m + 1) (w :: xs) y ws)
+
+
+{-| Try to move to the left.
+
+Return Nothing if the tape would overflow on the leftmost position.
+
+    create ["a"] "b" ["c", "d", "e"]
+        |> tryLeft 2
+        --> Nothing
+
+-}
+tryLeft : Int -> Tape a -> Maybe (Tape a)
+tryLeft n ((Tape m xs y zs) as tape) =
+    if n == 0 then
+        Just tape
+
+    else if n > m then
+        Nothing
+
+    else if n > 0 then
+        Just (left n tape)
+
+    else if n == 0 then
+        Just tape
+
+    else
+        case zs of
+            [] ->
+                Nothing
+
+            w :: ws ->
+                tryLeft (n + 1) (Tape (m + 1) (y :: xs) w ws)
+
+
+{-| Try to move to the right.
+
+Return Nothing if the tape would overflow on the rightmost position.
+
+    create ["a", "b"] "c" ["d"]
+        |> tryRight 2
+        --> Nothing
+
+-}
+tryRight : Int -> Tape a -> Maybe (Tape a)
+tryRight n =
+    tryLeft -n
 
 
 {-| Rewind tape so the head points to the first element
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> rewind
+        |> show identity
+        --> "[ => a, b, c, d, e ]"
+
 -}
 rewind : Tape a -> Tape a
-rewind ((Tape xs y zs) as tape) =
+rewind ((Tape _ xs y zs) as tape) =
     case xs of
         [] ->
             tape
 
         w :: ws ->
-            rewind (Tape ws w (y :: zs))
+            rewind (Tape 0 ws w (y :: zs))
 
 
-{-| Advance tape so the head points to the last element
+{-| Advance tape to the last element
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> advance
+        |> show identity
+        --> "[ a, b, c, d, => e ]"
+
 -}
 advance : Tape a -> Tape a
-advance ((Tape xs y zs) as tape) =
+advance ((Tape n xs y zs) as tape) =
     case zs of
         [] ->
             tape
 
         w :: ws ->
-            advance (Tape (y :: xs) w ws)
-
-
-{-| Move a single position to the left carrying the head value with the cursor
--}
-moveLeft : Tape a -> Tape a
-moveLeft ((Tape xs y zs) as tape) =
-    case xs of
-        [] ->
-            tape
-
-        w :: ws ->
-            Tape ws y (w :: zs)
-
-
-{-| Move a single position to the right carrying the head value with the cursor
--}
-moveRight : Tape a -> Tape a
-moveRight ((Tape xs y zs) as tape) =
-    case zs of
-        [] ->
-            tape
-
-        w :: ws ->
-            Tape (w :: xs) y ws
+            advance (Tape (n + 1) (y :: xs) w ws)
 
 
 
@@ -366,74 +576,287 @@ moveRight ((Tape xs y zs) as tape) =
 
 {-| Apply a function to every element of a tape.
 
-It is possible to map specific parts of the tape.
-
-    map f tape
-        -- order of application does not matter here
-        ==> (tape
-                |> mapLeft f
-                |> mapHead f
-                |> mapRight f
-            )
+    create ["a", "b"] "c" ["d", "e"]
+        |> map String.toUpper
+        |> show identity
+        --> "[ A, B, => C, D, E ]"
 
 -}
 map : (a -> b) -> Tape a -> Tape b
-map f (Tape xs y zs) =
-    Tape (List.map f xs) (f y) (List.map f zs)
+map f (Tape n xs y zs) =
+    Tape n (List.map f xs) (f y) (List.map f zs)
 
 
-{-| Combine two tapes with function. It keeps the smallest left and right part of each tape.
+{-| Combine two tapes with function.
+
+It keeps the smallest left and right tails of each tape.
+
+    (map2 (++)
+        (create ["a", "b"] "c" ["d", "e"])
+        (repeat 1 5 "x")
+    )
+        |> show identity
+        --> "[ bx, => cx, dx, ex ]"
+
 -}
 map2 : (a -> b -> result) -> Tape a -> Tape b -> Tape result
-map2 f (Tape xs y zs) (Tape xs_ y_ zs_) =
-    Tape (List.map2 f xs xs_) (f y y_) (List.map2 f zs zs_)
+map2 f (Tape n1 xs1 y1 zs1) (Tape n2 xs2 y2 zs2) =
+    Tape (min n1 n2) (List.map2 f xs1 xs2) (f y1 y2) (List.map2 f zs1 zs2)
 
 
-{-| Combine three tapes with function. It keeps the smallest left and right part of each tape.
+{-| Generalize map for 3 tapes
 -}
 map3 : (a -> b -> c -> result) -> Tape a -> Tape b -> Tape c -> Tape result
-map3 f (Tape xs y zs) (Tape xs_ y_ zs_) (Tape xs__ y__ zs__) =
-    Tape (List.map3 f xs xs_ xs__) (f y y_ y__) (List.map3 f zs zs_ zs__)
+map3 f (Tape n1 xs1 y1 zs1) (Tape n2 xs2 y2 zs2) (Tape n3 xs3 y3 zs3) =
+    Tape (min n1 (min n2 n3)) (List.map3 f xs1 xs2 xs3) (f y1 y2 y3) (List.map3 f zs1 zs2 zs3)
 
 
-{-| Modify head by given function.
+{-| Generalize map for 4 tapes
 -}
-mapHead : (a -> a) -> Tape a -> Tape a
-mapHead f (Tape xs y zs) =
-    Tape xs (f y) zs
+map4 : (a -> b -> c -> d -> result) -> Tape a -> Tape b -> Tape c -> Tape d -> Tape result
+map4 f (Tape n1 xs1 y1 zs1) (Tape n2 xs2 y2 zs2) (Tape n3 xs3 y3 zs3) (Tape n4 xs4 y4 zs4) =
+    Tape (min n1 (min n2 (min n3 n4))) (List.map4 f xs1 xs2 xs3 xs4) (f y1 y2 y3 y4) (List.map4 f zs1 zs2 zs3 zs4)
 
 
-{-| Modify everything right of the head (head not included).
+{-| Generalize map for 5 tapes
 -}
-mapRight : (a -> a) -> Tape a -> Tape a
-mapRight f (Tape xs y zs) =
-    Tape xs y (List.map f zs)
+map5 : (a -> b -> c -> d -> e -> result) -> Tape a -> Tape b -> Tape c -> Tape d -> Tape e -> Tape result
+map5 f (Tape n1 xs1 y1 zs1) (Tape n2 xs2 y2 zs2) (Tape n3 xs3 y3 zs3) (Tape n4 xs4 y4 zs4) (Tape n5 xs5 y5 zs5) =
+    Tape (min n1 (min n2 (min n3 (min n4 n5)))) (List.map5 f xs1 xs2 xs3 xs4 xs5) (f y1 y2 y3 y4 y5) (List.map5 f zs1 zs2 zs3 zs4 zs5)
 
 
-{-| Modify everything left of the head (head not included).
+{-| The direction enum selects parts of the tape that shall be extracted/modified.
+
+Each function might interpret each direction slightly differently. Check the
+documentation for more details.
+
 -}
-mapLeft : (a -> a) -> Tape a -> Tape a
-mapLeft f (Tape xs y zs) =
-    Tape (List.map f xs) y zs
+type Direction
+    = Left
+    | Right
+    | LeftTail
+    | Backwards
+    | BackwardsTail
+    | RightTail
+    | Head
+    | Tails
+    | InsideOut
+    | All
 
 
-{-| Map function passing a boolean that tells if each element is the head or not.
+{-| A partial map on the tape, preserving the types of elements.
+
+We can specify a direction to update from the head
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> update Right String.toUpper
+        |> show identity
+        --> "[ a, b, => C, D, E ]"
+
+The direction can be one of the following:
+
+    - `Left` - only the left part is modified, including the head.
+    - `Right` - only the right part is modified, including the head.
+    - `LeftTail` - only the left part is modified, excluding the head.
+    - `RightTail` - only the right part is modified, excluding the head.
+    - `Backwards` - same as Left.
+    - `BackwardsTail` - same as LeftTail.
+    - `Head` - only the head is modified.
+    - `Tails` - modify everything exept the head.
+    - `InsideOut` - like All.
+    - `All` - all elements are modified.
+
 -}
-mapSelect : (Bool -> a -> b) -> Tape a -> Tape b
-mapSelect f (Tape xs y zs) =
-    Tape (List.map (f False) xs) (f True y) (List.map (f False) zs)
+update : Direction -> (a -> a) -> Tape a -> Tape a
+update direction f ((Tape n xs y zs) as tape) =
+    case direction of
+        All ->
+            Tape n (List.map f xs) (f y) (List.map f zs)
+
+        InsideOut ->
+            Tape n (List.map f xs) (f y) (List.map f zs)
+
+        Left ->
+            Tape n (List.map f xs) (f y) zs
+
+        Backwards ->
+            update Left f tape
+
+        LeftTail ->
+            Tape n (List.map f xs) (f y) zs
+
+        BackwardsTail ->
+            update LeftTail f tape
+
+        Right ->
+            Tape n xs (f y) (List.map f zs)
+
+        RightTail ->
+            Tape n xs y (List.map f zs)
+
+        Head ->
+            Tape n xs (f y) zs
+
+        Tails ->
+            Tape n (List.map f zs) y (List.map f zs)
+
+
+{-| Select parts of a tape and return it as a list
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> select All
+        --> [ "a", "b", "c", "d", "e" ]
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> select Left
+        --> [ "a", "b", "c" ]
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> select Backwards
+        --> [ "c", "b", "a" ]
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> select Head
+        --> [ "c" ]
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> select Tails
+        --> [ "a", "b", "d", "e" ]
+
+-}
+select : Direction -> Tape a -> List a
+select direction (Tape _ xs y zs) =
+    case direction of
+        All ->
+            List.reverse xs ++ (y :: zs)
+
+        InsideOut ->
+            xs ++ (y :: zs)
+
+        Left ->
+            List.reverse (y :: xs)
+
+        Backwards ->
+            y :: xs
+
+        LeftTail ->
+            List.reverse xs
+
+        BackwardsTail ->
+            xs
+
+        Right ->
+            y :: zs
+
+        RightTail ->
+            zs
+
+        Head ->
+            [ y ]
+
+        Tails ->
+            List.reverse xs ++ zs
+
+
+{-| Take elements from one specific direction on the tape
+-}
+take : Direction -> Int -> Tape a -> Tape a
+take direction n ((Tape m xs y zs) as tape) =
+    case direction of
+        Tails ->
+            Tape (min n m) (List.take n xs) y (List.take n zs)
+
+        InsideOut ->
+            Tape (min (n - 1) m) (List.take (n - 1) xs) y (List.take (n - 1) zs)
+
+        All ->
+            take InsideOut n tape
+
+        Left ->
+            Tape (min (n - 1) m) (List.take (n - 1) xs) y zs
+
+        Backwards ->
+            take Left n tape
+
+        LeftTail ->
+            Tape (min n m) (List.take n xs) y zs
+
+        BackwardsTail ->
+            take LeftTail n tape
+
+        Right ->
+            Tape m xs y (List.take (n - 1) zs)
+
+        RightTail ->
+            Tape m xs y (List.take n zs)
+
+        Head ->
+            Tape 0 [] y []
+
+
+{-| Filter the given selection of tape with predicate.
+
+Filter never removes the head, which makes `filter Head` a no-op and
+`filter DirectoinTail` and `filter Direction` equivalent.
+
+If you want to filter the head, convert to a list before
+
+-}
+filter : Direction -> (a -> Bool) -> Tape a -> Tape a
+filter direction pred ((Tape n xs y zs) as tape) =
+    case direction of
+        All ->
+            Tape n (List.filter pred xs) y (List.filter pred zs)
+
+        InsideOut ->
+            filter All pred tape
+
+        Tails ->
+            filter All pred tape
+
+        Left ->
+            Tape n (List.filter pred xs) y zs
+
+        Backwards ->
+            filter Left pred tape
+
+        LeftTail ->
+            filter Left pred tape
+
+        BackwardsTail ->
+            filter Left pred tape
+
+        Right ->
+            Tape n xs y (List.filter pred zs)
+
+        RightTail ->
+            filter Right pred tape
+
+        Head ->
+            tape
 
 
 {-| Places the given value between all members of the given tape.
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> intersperse "x"
+        |> show identity
+        --> "[ a, x, b, x, => c, x, d, x, e ]"
+
 -}
 intersperse : a -> Tape a -> Tape a
-intersperse x (Tape xs y zs) =
-    Tape (x :: List.intersperse x xs) y (x :: List.intersperse x zs)
+intersperse x (Tape n xs y zs) =
+    Tape (max 0 (2 * n - 1)) (x :: List.intersperse x xs) y (x :: List.intersperse x zs)
 
 
 {-| Sort values from lowest to highest
 
 Head moves to keep track of current element.
+
+    create ["d"] "c" ["a", "e", "b"]
+        |> sort
+        |> show identity
+        --> "[ a, b, => c, d, e ]"
 
 -}
 sort : Tape comparable -> Tape comparable
@@ -445,9 +868,14 @@ sort =
 
 Head moves to keep track of current element.
 
+    create ["d"] "cc" ["a", "eee", "bb"]
+        |> sortBy String.length
+        |> show identity
+        --> "[ d, a, => cc, bb, eee ]"
+
 -}
 sortBy : (a -> comparable) -> Tape a -> Tape a
-sortBy f (Tape xs y zs) =
+sortBy f (Tape _ xs y zs) =
     let
         keyed =
             ( True, y ) :: (List.map (Tuple.pair False) xs ++ List.map (Tuple.pair False) zs)
@@ -455,18 +883,17 @@ sortBy f (Tape xs y zs) =
     keyed
         |> List.sortBy (\( _, x ) -> f x)
         |> fromListOrDefault ( False, y )
-        -- (... but list will never be empty)
         |> rightWhile (\( key, _ ) -> not key)
         |> map Tuple.second
 
 
-{-| Sort values with a custoem comparison function.
+{-| Sort values with a custom comparison function.
 
 Head moves to keep track of current element.
 
 -}
 sortWith : (a -> a -> Order) -> Tape a -> Tape a
-sortWith f (Tape xs h zs) =
+sortWith f (Tape _ xs h zs) =
     let
         keyed =
             ( True, h ) :: (List.map (Tuple.pair False) xs ++ List.map (Tuple.pair False) zs)
@@ -474,15 +901,20 @@ sortWith f (Tape xs h zs) =
     keyed
         |> List.sortWith (\( _, x ) ( _, y ) -> f x y)
         |> fromListOrDefault ( False, h )
-        -- (... but list will never be empty)
         |> rightWhile (\( key, _ ) -> not key)
         |> map Tuple.second
 
 
-{-| Decompose a list of tuples into a tuple of lists.
+{-| Decompose a tape of tuples into a tuple of tapes.
+
+    create [("a", 1), ("b", 2)] ("c", 3) [("d", 4), ("e", 5)]
+        |> unzip
+        |> Tuple.mapBoth (show identity) (show String.fromInt)
+        --> ( "[ a, b, => c, d, e ]", "[ 1, 2, => 3, 4, 5 ]" )
+
 -}
 unzip : Tape ( a, b ) -> ( Tape a, Tape b )
-unzip (Tape xs ( a, b ) zs) =
+unzip (Tape n xs ( a, b ) zs) =
     let
         ( xas, xbs ) =
             List.unzip xs
@@ -490,7 +922,7 @@ unzip (Tape xs ( a, b ) zs) =
         ( zas, zbs ) =
             List.unzip zs
     in
-    ( Tape xas a zas, Tape xbs b zbs )
+    ( Tape n xas a zas, Tape n xbs b zbs )
 
 
 {-| Same as map but the function is also applied to the index of each element.
@@ -498,9 +930,14 @@ unzip (Tape xs ( a, b ) zs) =
 The head has an index of zero and the left hand side of the tape is indexed with
 negative numbers.
 
+    create ["a", "b"] "c" ["d", "e"]
+        |> indexedMap (\i x -> String.fromInt i ++ x)
+        |> show identity
+        --> "[ -2a, -1b, => 0c, 1d, 2e ]"
+
 -}
 indexedMap : (Int -> a -> b) -> Tape a -> Tape b
-indexedMap f (Tape xs y zs) =
+indexedMap f (Tape m xs y zs) =
     let
         f1 n x =
             f -(n + 1) x
@@ -508,16 +945,41 @@ indexedMap f (Tape xs y zs) =
         f2 n x =
             f (n + 1) x
     in
-    Tape (List.indexedMap f1 xs) (f 0 y) (List.indexedMap f2 zs)
+    Tape m (List.indexedMap f1 xs) (f 0 y) (List.indexedMap f2 zs)
+
+
+{-| Similar to indexedMap, but uses the position of each element, which is
+equivalent to the index of a rewinded tape.
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> positionalMap (\i x -> String.fromInt i ++ x)
+        |> show identity
+        --> "[ 0a, 1b, => 2c, 3d, 4e ]"
+
+-}
+positionalMap : (Int -> a -> b) -> Tape a -> Tape b
+positionalMap f (Tape m xs y zs) =
+    let
+        f1 n x =
+            f (m - n - 1) x
+
+        f2 n x =
+            f (m + n + 1) x
+    in
+    Tape m (List.indexedMap f1 xs) (f m y) (List.indexedMap f2 zs)
 
 
 {-| Reduce a tape from the left.
 
 It has the same effect as reducing the equivalent list.
 
+    create ["a", "b"] "c" ["d", "e"]
+        |> foldl (++) "$"
+        --> "edcba$"
+
 -}
 foldl : (a -> b -> b) -> b -> Tape a -> b
-foldl f acc (Tape xs y zs) =
+foldl f acc (Tape _ xs y zs) =
     List.foldl f (List.foldr f acc xs) (y :: zs)
 
 
@@ -525,49 +987,53 @@ foldl f acc (Tape xs y zs) =
 
 It has the same effect as reducing the equivalent list.
 
+    create ["a", "b"] "c" ["d", "e"]
+        |> foldr (++) "$"
+        --> "abcde$"
+
 -}
 foldr : (a -> b -> b) -> b -> Tape a -> b
-foldr f acc (Tape xs y zs) =
+foldr f acc (Tape _ xs y zs) =
     List.foldl f (List.foldr f acc zs) (y :: xs)
 
 
 {-| Reduce tape applying binary operator.
 
-Similar to a fold, but it does not require an initial accumulator.
+Similar to a left fold, but it does not require an initial accumulator.
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> reduce (++)
+        --> "abcde"
+
+    create [] "c" ["d", "e"]
+        |> reduce (++)
+        --> "cde"
 
 -}
 reduce : (a -> a -> a) -> Tape a -> a
-reduce op (Tape xs y zs) =
-    List.foldl op (List.foldr op y zs) xs
+reduce op (Tape _ xs_ y zs) =
+    let
+        start =
+            case List.reverse xs_ of
+                [] ->
+                    y
+
+                x :: xs ->
+                    op (List.foldl (\a b -> op b a) x xs) y
+    in
+    List.foldl (\a b -> op b a) start zs
 
 
 {-| Converts tape to list
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> toList
+        --> ["a", "b", "c", "d", "e"]
+
 -}
 toList : Tape a -> List a
-toList (Tape xs y zs) =
+toList (Tape _ xs y zs) =
     List.reverse xs ++ (y :: zs)
-
-
-{-| Keep only elements to the left that pass predicate.
-Right part is not touched.
-
-This function does not affect the head.
-
--}
-filterRight : (a -> Bool) -> Tape a -> Tape a
-filterRight pred (Tape xs y zs) =
-    Tape xs y (List.filter pred zs)
-
-
-{-| Keep only elements to the right that pass predicate.
-Right part is not touched.
-
-This function does not affect the head.
-
--}
-filterLeft : (a -> Bool) -> Tape a -> Tape a
-filterLeft pred (Tape xs y zs) =
-    Tape (List.filter pred xs) y zs
 
 
 
@@ -577,10 +1043,15 @@ filterLeft pred (Tape xs y zs) =
 
 
 {-| Determine the length of a tape.
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> length
+        --> 5
+
 -}
 length : Tape a -> Int
-length (Tape xs _ ys) =
-    List.length xs + List.length ys + 1
+length (Tape n _ _ ys) =
+    n + List.length ys + 1
 
 
 {-| Determine the position of head.
@@ -588,40 +1059,62 @@ length (Tape xs _ ys) =
 Position corresponds to the number of steps we must move
 right from a rewinded tape.
 
-    n = (position tape)
-    right n (rewind tape) ==> tape
+    create ["a", "b"] "c" ["d", "e"]
+        |> position
+        --> 2
 
 -}
 position : Tape a -> Int
-position (Tape xs _ _) =
-    List.length xs
+position (Tape n _ _ _) =
+    n
 
 
-{-| Reverse a list.
+{-| Flip a tape around the head.
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> reverse
+        |> show identity
+        --> "[ e, d, => c, b, a ]"
+
 -}
 reverse : Tape a -> Tape a
-reverse (Tape xs y zs) =
-    Tape zs y xs
+reverse (Tape _ xs y zs) =
+    Tape (List.length zs) zs y xs
 
 
 {-| Figure out whether a tape contains a value.
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> member "b"
+        --> True
+
 -}
 member : a -> Tape a -> Bool
-member a (Tape xs y zs) =
+member a (Tape _ xs y zs) =
     a == y || List.member a xs || List.member a zs
 
 
 {-| Determine if all elements satisfy some test.
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> all (\x -> String.length x < 2)
+        --> True
+
 -}
 all : (a -> Bool) -> Tape a -> Bool
-all pred (Tape xs y zs) =
+all pred (Tape _ xs y zs) =
     pred y && List.all pred xs && List.all pred zs
 
 
-{-| Determine if any elements satisfy some test.
+{-| Determine if any element satisfy some test.
+
+    create ["a", "b"] "c" ["d", "e"]
+        |> any (\x -> x == "e")
+        --> True
+
 -}
 any : (a -> Bool) -> Tape a -> Bool
-any pred (Tape xs y zs) =
+any pred (Tape _ xs y zs) =
     pred y || List.any pred xs || List.any pred zs
 
 
@@ -659,70 +1152,21 @@ The parts can be assembled back together with `create left head tail`
 
 -}
 parts : Tape a -> ( List a, a, List a )
-parts (Tape xs y zs) =
+parts (Tape _ xs y zs) =
     ( List.reverse xs, y, zs )
-
-
-{-| Includes the head and everything to its left
-
-The order of elements is reversed, so the head corresponds to the
-first element.
-
-    tape = create [1, 2] 3 [4, 5]
-    leftList tape ==> [3, 2, 1]
-
--}
-leftList : Tape a -> List a
-leftList (Tape xs y _) =
-    y :: xs
-
-
-{-| Similar to leftList, but does not include the head.
-
-    tape = create [1, 2] 3 [4, 5]
-    leftTail tape ==> [2, 1]  -- Head is absent!
-
--}
-leftTail : Tape a -> List a
-leftTail (Tape xs y _) =
-    y :: xs
-
-
-{-| Includes the head and everything to its right
--}
-rightList : Tape a -> List a
-rightList (Tape _ y zs) =
-    y :: zs
-
-
-{-| Similar to rightList, but does not include the head.
--}
-rightTail : Tape a -> List a
-rightTail (Tape _ _ zs) =
-    zs
-
-
-{-| Construct tape from left and right tails.
-
-    fromTails (leftTail tape) (head tape) (rightTail tape) ==> tape
-
--}
-fromTails : List a -> a -> List a -> Tape a
-fromTails =
-    Tape
 
 
 {-| True if tape has no elements to the left o head
 -}
 isEmptyLeft : Tape a -> Bool
-isEmptyLeft (Tape xs _ _) =
-    List.isEmpty xs
+isEmptyLeft (Tape n _ _ _) =
+    n == 0
 
 
 {-| True if tape has no elements to the right o head
 -}
 isEmptyRight : Tape a -> Bool
-isEmptyRight (Tape _ _ xs) =
+isEmptyRight (Tape _ _ _ xs) =
     List.isEmpty xs
 
 
@@ -732,7 +1176,7 @@ Elements left of head have negative indexes.
 
 -}
 elemIndex : a -> Tape a -> Maybe Int
-elemIndex elem (Tape xs y zs) =
+elemIndex elem (Tape _ xs y zs) =
     case List.elemIndex elem xs of
         Just i ->
             Just (-1 - i)
@@ -751,13 +1195,14 @@ elemIndex elem (Tape xs y zs) =
 --------------------------------------------------------------------------------
 
 
-callN : Int -> (a -> a) -> a -> a
-callN n f x =
-    if n <= 0 then
-        x
-
-    else if n == 1 then
-        f x
-
-    else
-        callN (n - 1) f (f x)
+{-| Show tape as string, with emphasis on head element
+-}
+show : (a -> String) -> Tape a -> String
+show f tape =
+    case map f tape of
+        Tape _ xs y zs ->
+            let
+                body =
+                    List.reverse (("=> " ++ y) :: xs) ++ zs
+            in
+            "[ " ++ String.join ", " body ++ " ]"
